@@ -83,7 +83,9 @@ const BUILTIN_SYNONYMS = {
   vintera: ['vintera', '빈테라'],
   '빈테라': ['vintera', '빈테라'],
   gibson: ['gibson', '깁슨'],
-  '깁슨': ['gibson', '깁슨']
+  '깁슨': ['gibson', '깁슨'],
+  custom: ['custom', '커스텀'],
+  '커스텀': ['custom', '커스텀']
 };
 
 function expandSingleToken(rawToken) {
@@ -290,7 +292,15 @@ function matchesKeywordRule(productTitle, parsedRule) {
 // ----------------------------------------------------------------------------
 // 3. 크롤러 & 품절 감지 로직 (목록 카드 검사 + 상세 페이지 2차 검증)
 // ----------------------------------------------------------------------------
-const SOLDOUT_PATTERN = /품절|일시품절|재고\s*없음|판매\s*종료|sold\s*out|out\s*of\s*stock|icon_soldout|ico_soldout|btn_soldout|prod_soldout|soldout\.(?:gif|png|jpg|svg)|class=["'][^"']*sold[-_]?out/i;
+const SOLDOUT_PATTERN = /품절|일시품절|재고\s*없음|판매\s*종료|sold\s*out|out\s*of\s*stock|icon_soldout|ico_soldout|btn_soldout|prod_soldout|soldout_icon|sold[-_]?out[-_]?icon|btn_add_soldout|btn_restock_box|btn_restock_notice|btn_add_restock|재입고\s*알림|soldout\.(?:gif|png|jpg|svg)|class=["'][^"']*sold[-_]?out/i;
+
+function stripNoiseFromHtml(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
+}
 
 async function fetchHtml(url) {
   const response = await axios.get(url, {
@@ -315,18 +325,19 @@ async function fetchHtml(url) {
 }
 
 function extractProducts(html, baseUrl) {
-  const sanitizedHtml = String(html || '').replace(/<!--[\s\S]*?-->/g, '');
+  const sanitizedHtml = stripNoiseFromHtml(html);
   const $ = cheerio.load(sanitizedHtml);
-  $('script, style, noscript').remove();
+  $('.displaynone, .dn, .d-none, .hidden, .hide, [style*="display:none"], [style*="display: none"]').remove();
 
   const products = [];
-  const seenUrls = new Set();
+  const productMap = new Map();
 
   $('a[href]').each((_, el) => {
     const rawHref = ($(el).attr('href') || '').trim();
     if (!rawHref || rawHref.startsWith('javascript:') || rawHref.startsWith('#')) return;
 
-    const text = ($(el).text() + ' ' + ($(el).find('img').attr('alt') || ''))
+    const directText = $(el).text().replace(/\s+/g, ' ').trim();
+    const text = (directText + ' ' + ($(el).find('img').attr('alt') || ''))
       .replace(/\s+/g, ' ')
       .trim();
 
@@ -338,23 +349,38 @@ function extractProducts(html, baseUrl) {
 
     let fullUrl = rawHref;
     try {
-      fullUrl = new URL(rawHref, baseUrl).href;
+      const parsed = new URL(rawHref, baseUrl);
+      parsed.hash = '';
+      fullUrl = parsed.href;
     } catch (e) {
       return;
     }
 
-    if (seenUrls.has(fullUrl)) return;
-
-    // 상품 카드 컨테이너(li, dl, tr, div.item 등) 전체 HTML에서 품절 텍스트/아이콘 이미지/클래스 탐지
-    const cardContainer = $(el).closest('li, dl, tr, .item, .prd-item, .goods_item, .box');
+    // 상품 카드 컨테이너(li, dl, tr, div.item_cont, .prd-item 등) 전체 HTML에서 품절 텍스트/아이콘 이미지/클래스 탐지
+    const cardContainer = $(el).closest('li, dl, tr, .item_cont, .item, .prd-item, .goods_item, .box');
     const cardHtml = cardContainer.length
       ? cardContainer.html()
       : ($(el).parent().parent().html() || $(el).parent().html() || '');
 
     const isSoldOut = SOLDOUT_PATTERN.test(cardHtml || '');
 
-    seenUrls.add(fullUrl);
-    products.push({ title: text, url: fullUrl, isSoldOut });
+    // 동일 상품 URL이 사이드바('오늘 본 상품' 등)와 본문 목록에 중복 등장할 때 품절 상태를 병합
+    if (productMap.has(fullUrl)) {
+      const existing = productMap.get(fullUrl);
+      if (isSoldOut) existing.isSoldOut = true;
+      if (directText.length >= 4 && directText.length >= existing.title.length) {
+        existing.title = directText;
+      }
+      return;
+    }
+
+    const item = {
+      title: directText.length >= 4 ? directText : text,
+      url: fullUrl,
+      isSoldOut
+    };
+    productMap.set(fullUrl, item);
+    products.push(item);
   });
 
   return products;
@@ -363,19 +389,19 @@ function extractProducts(html, baseUrl) {
 async function checkDetailPageSoldOut(productUrl) {
   try {
     const { statusCode, html } = await fetchHtml(productUrl);
-    if (statusCode < 200 || statusCode >= 400) return false;
-    
-    // HTML 주석(<!--...-->) 먼저 제거 (쇼핑몰에서 재고 있을 때 품절 버튼을 주석 처리하는 패턴 방지)
-    const sanitizedHtml = html.replace(/<!--[\s\S]*?-->/g, '');
+    if (statusCode < 200 || statusCode >= 400) return null;
+
+    const sanitizedHtml = stripNoiseFromHtml(html);
     const $ = cheerio.load(sanitizedHtml);
-    $('script, style, noscript').remove();
+    $('.displaynone, .dn, .d-none, .hidden, .hide, [style*="display:none"], [style*="display: none"]').remove();
     const bodyHtml = $.html();
 
-    const activeSoldOutBtn = /<(?:span|div|a|button|p)[^>]*class=["'](?![^"']*displaynone)[^"']*(?:soldout|sold_out|out-of-stock)[^"']*["'][^>]*>/i.test(bodyHtml);
-    const explicitSoldOutText = /(?:현재\s*품절|품절된\s*상품|구매불가|재고가\s*없습니다|SOLD\s*OUT\s*된\s*상품)/i.test(bodyHtml);
-    return activeSoldOutBtn || explicitSoldOutText;
+    const activeSoldOutClass = /<(?:span|div|a|button|p|li|em|strong|input)\b[^>]*class=["'](?![^"']*displaynone)[^"']*(?:soldout|sold_out|out-of-stock|btn_add_soldout|btn_restock_box|btn_restock_notice|btn_add_restock)[^"']*["'][^>]*>/i.test(bodyHtml);
+    const activeSoldOutTagText = /<(?:button|a|span|p|em|strong)\b[^>]*>\s*(?:품절|일시품절|SOLD\s*OUT|OUT\s*OF\s*STOCK|재고\s*없음|판매\s*종료|구매\s*불가|재입고\s*알림(?:\s*신청)?)\s*<\/(?:button|a|span|p|em|strong)>/i.test(bodyHtml);
+    const explicitSoldOutText = /(?:현재\s*품절|품절된\s*상품|구매불가|재고가\s*없습니다|SOLD\s*OUT\s*된\s*상품|재입고\s*알림\s*신청|재입고알림)/i.test(bodyHtml);
+    return activeSoldOutClass || activeSoldOutTagText || explicitSoldOutText;
   } catch (e) {
-    return false;
+    return null;
   }
 }
 
@@ -417,13 +443,18 @@ async function runWatchScan(watch, isInitialScan = false) {
       for (const prod of products) {
         if (!matchesKeywordRule(prod.title, watch.parsedRule)) continue;
 
-        let finalSoldOut = prod.isSoldOut;
-        if (!finalSoldOut) {
-          finalSoldOut = await checkDetailPageSoldOut(prod.url);
-        }
-
         const key = `${watch.watchId}|${site.siteName}|${prod.url}`;
         const prev = db.snapshots[key];
+
+        let finalSoldOut = prod.isSoldOut;
+        if (!finalSoldOut) {
+          const detailSoldOut = await checkDetailPageSoldOut(prod.url);
+          if (detailSoldOut === true) {
+            finalSoldOut = true;
+          } else if (detailSoldOut === null && prev) {
+            finalSoldOut = Boolean(prev.isSoldOut);
+          }
+        }
 
         if (!prev) {
           db.snapshots[key] = {
@@ -637,6 +668,15 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-app.listen(PORT, () => {
-  console.log(`Product Monitor Server running on http://localhost:${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Product Monitor Server running on http://localhost:${PORT}`);
+  });
+}
+
+module.exports = {
+  buildKeywordRules,
+  matchesKeywordRule,
+  extractProducts,
+  checkDetailPageSoldOut
+};
