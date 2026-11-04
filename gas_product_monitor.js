@@ -432,42 +432,194 @@ function fetchHtmlWithEncoding_(url) {
 }
 
 /**
- * [품절 여부 판단 로직 - 1단계: 상품 목록 카드 컨텍스트 검사]
- * 한국 쇼핑몰(카페24, 메이크샵, 고도몰)의 3대 품절 표시 패턴을 모두 검사합니다:
- * 1) 한글/영문 텍스트: 품절, 일시품절, 재고없음, 판매종료, SOLD OUT, Out of stock
- * 2) 품절 아이콘 이미지 파일명/속성: icon_soldout.gif, btn_soldout, ico_soldout, prod_soldout, alt="품절"
- * 3) CSS 클래스/상태값: class="... soldout ...", out-of-stock, is-soldout
+ * 스크립트/스타일/주석 제거 전처리
+ * - 반드시 <script>, <style>을 먼저 제거한 뒤 HTML 주석(<!--...-->)을 제거해야
+ *   <script> 내부의 '<!--' 문자열이 본문 HTML까지 삼키는 현상을 방지할 수 있습니다.
  */
-const SOLDOUT_PATTERN = /품절|일시품절|재고\s*없음|판매\s*종료|sold\s*out|out\s*of\s*stock|icon_soldout|ico_soldout|btn_soldout|prod_soldout|soldout\.(?:gif|png|jpg|svg)|class=["'][^"']*sold[-_]?out/i;
-
-function isChunkSoldOut_(htmlChunk) {
-  return SOLDOUT_PATTERN.test(htmlChunk || '');
+function stripNoiseFromHtml_(html) {
+  return String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
 }
 
 /**
- * [품절 여부 판단 로직 - 2단계: 키워드 매칭된 상품의 상세 페이지 교차 검증 (선택적 보조)]
- * 목록 페이지에 품절 배지가 없고 상세 페이지 안에서만 품절이 표시되는 쇼핑몰을 위해
- * 키워드 조건에 매칭된 상품에 한해 상세 페이지의 구매버튼/품절 영역을 추가 확인합니다.
+ * 비활성(displaynone, display:none 등) 숨김 요소 제거
+ */
+function stripHiddenElements_(htmlChunk) {
+  return String(htmlChunk || '')
+    .replace(/<([a-z0-9]+)\b[^>]*(?:class=["'][^"']*\b(?:displaynone|dn|d-none|hidden|hide)\b[^"']*["']|style=["'][^"']*display\s*:\s*none[^"']*["'])[^>]*>[\s\S]*?<\/\1>/gi, '');
+}
+
+/**
+ * 상대경로(../, ./, /) 및 기존 저장된 URL의 dot-segment(../)를 표준 절대 URL로 정규화
+ * Ex) baseUrl: https://www.buzzbee.co.kr/goods/goods_search.php?keyword=jaguar
+ *     rawHref: ../goods/goods_view.php?goodsNo=29755
+ *  -> https://www.buzzbee.co.kr/goods/goods_view.php?goodsNo=29755
+ */
+function resolveProductUrl_(rawHref, baseUrl) {
+  const href = String(rawHref || '').trim();
+  const base = String(baseUrl || '').trim();
+  if (!href) return '';
+
+  let targetUrl = href;
+  if (href.startsWith('//')) {
+    const schemeMatch = base.match(/^(https?:)/i);
+    targetUrl = (schemeMatch ? schemeMatch[1] : 'https:') + href;
+  } else if (!/^https?:\/\//i.test(href)) {
+    const originMatch = base.match(/^(https?:\/\/[^/?#]+)(\/[^?#]*)?/i);
+    if (!originMatch) return href;
+    const origin = originMatch[1];
+    const basePath = originMatch[2] || '/';
+    if (href.startsWith('/')) {
+      targetUrl = origin + href;
+    } else {
+      const baseDir = basePath.replace(/\/[^/]*$/, '/');
+      targetUrl = origin + baseDir + href;
+    }
+  }
+
+  targetUrl = targetUrl.replace(/#.*$/, '');
+  const fullMatch = targetUrl.match(/^(https?:\/\/[^/?#]+)(\/[^?#]*)?(\?.*)?$/i);
+  if (!fullMatch) return targetUrl;
+
+  const origin = fullMatch[1];
+  const pathPart = fullMatch[2] || '/';
+  const queryPart = fullMatch[3] || '';
+
+  const segments = pathPart.split('/');
+  const resolved = [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    if (!seg || seg === '.') continue;
+    if (seg === '..') {
+      if (resolved.length > 0) resolved.pop();
+    } else {
+      resolved.push(seg);
+    }
+  }
+
+  return origin + '/' + resolved.join('/') + queryPart;
+}
+
+/**
+ * [품절 여부 판단 로직 - 1단계: 상품 목록 카드 컨텍스트 검사]
+ * 한국 쇼핑몰(카페24, 메이크샵, 고도몰5/버즈비 등)의 품절 표시 패턴을 모두 검사합니다:
+ * 1) 한글/영문 텍스트: 품절, 일시품절, 재고없음, 판매종료, SOLD OUT, Out of stock, 재입고 알림
+ * 2) 품절 아이콘 이미지 파일명/속성: icon_soldout, soldout_icon, btn_soldout, ico_soldout, prod_soldout, alt="품절"
+ * 3) CSS 클래스/상태값: btn_add_soldout, btn_restock_box, soldout, out-of-stock
+ */
+const SOLDOUT_PATTERN = /품절|일시품절|재고\s*없음|판매\s*종료|sold\s*out|out\s*of\s*stock|icon_soldout|ico_soldout|btn_soldout|prod_soldout|soldout_icon|sold[-_]?out[-_]?icon|btn_add_soldout|btn_restock_box|btn_restock_notice|btn_add_restock|재입고\s*알림|soldout\.(?:gif|png|jpg|svg)|class=["'][^"']*sold[-_]?out/i;
+
+function isChunkSoldOut_(htmlChunk) {
+  const visibleChunk = stripHiddenElements_(htmlChunk);
+  return SOLDOUT_PATTERN.test(visibleChunk);
+}
+
+/**
+ * 상품 <a> 태그 그룹을 감싸는 개별 상품 카드 컨테이너(<li>, <tr>, <dl> 또는 카드 <div>) 추출
+ * - 고도몰(버즈비 등)처럼 썸네일 <a>와 하단 .item_icon_box(품절 아이콘) 사이 거리가 700자 이상 떨어진 구조도
+ *   <li>...</li> 전체 카드를 정확히 추출하여 누락 없이 감지합니다.
+ * - 카페24처럼 카드 내부에 중첩 <ul class="spec"><li>...</li></ul>가 있는 경우에도 태그 깊이(depth)를 계산해
+ *   외곽 상품 <li>가 닫히는 지점까지 안전하게 추출합니다.
+ */
+function findEnclosingContainer_(cleanHtml, prevEnd, groupStart, groupEnd, nextStart) {
+  const searchStart = Math.max(prevEnd, groupStart - 800);
+  const beforeRegion = cleanHtml.substring(searchStart, groupStart);
+  const tagRegex = /<\/?(li|tr|dl)\b[^>]*>/gi;
+  const stack = [];
+  let m;
+
+  while ((m = tagRegex.exec(beforeRegion)) !== null) {
+    const isClose = /^<\//.test(m[0]);
+    const tag = m[1].toLowerCase();
+    if (isClose) {
+      for (let s = stack.length - 1; s >= 0; s--) {
+        if (stack[s].tag === tag) {
+          stack.splice(s, 1);
+          break;
+        }
+      }
+    } else {
+      stack.push({ tag: tag, idx: searchStart + m.index });
+    }
+  }
+
+  const maxLookahead = Math.min(cleanHtml.length, groupEnd + 1800);
+
+  if (stack.length > 0) {
+    const outer = stack[0];
+    const closeMatcher = new RegExp('<\\/?' + outer.tag + '\\b[^>]*>', 'gi');
+    closeMatcher.lastIndex = outer.idx;
+    let depth = 0;
+    let cm;
+    while ((cm = closeMatcher.exec(cleanHtml)) !== null) {
+      if (cm.index >= maxLookahead) break;
+      if (/^<\//.test(cm[0])) {
+        depth--;
+        if (depth <= 0) {
+          return cleanHtml.substring(outer.idx, cm.index + cm[0].length);
+        }
+      } else {
+        depth++;
+      }
+    }
+    return cleanHtml.substring(outer.idx, Math.min(nextStart, maxLookahead));
+  }
+
+  // <li>/<tr>/<dl>이 아닌 <div> 기반 상품 카드 폴백
+  const divOpenRegex = /<div\b[^>]*class=["'][^"']*(?:item_cont|prd-item|goods_item|item_box|prd_box|list_item|item)[^"']*["'][^>]*>/gi;
+  let cardStart = Math.max(prevEnd, groupStart - 180);
+  let dm;
+  while ((dm = divOpenRegex.exec(beforeRegion)) !== null) {
+    cardStart = searchStart + dm.index;
+  }
+
+  const boundEnd = Math.min(nextStart, maxLookahead);
+  const afterRegion = cleanHtml.substring(groupEnd, boundEnd);
+  let cardEnd = boundEnd;
+  if (nextStart <= groupEnd + 1800) {
+    let lastNextDiv = null;
+    divOpenRegex.lastIndex = 0;
+    let nm;
+    while ((nm = divOpenRegex.exec(afterRegion)) !== null) {
+      lastNextDiv = nm.index;
+    }
+    if (lastNextDiv !== null) {
+      cardEnd = groupEnd + lastNextDiv;
+    }
+  }
+  return cleanHtml.substring(cardStart, cardEnd);
+}
+
+/**
+ * [품절 여부 판단 로직 - 2단계: 키워드 매칭된 상품의 상세 페이지 교차 검증]
+ * - 반환값:
+ *   true  -> 상세 페이지에서 품절 확인됨
+ *   false -> 상세 페이지 정상 로드 완료 및 품절 표시 없음(구매 가능)
+ *   null  -> 네트워크/HTTP 오류로 판단 불가 (기존 스냅샷 상태 유지용)
  */
 function checkDetailPageSoldOut_(productUrl) {
   try {
-    const res = fetchHtmlWithEncoding_(productUrl);
-    if (res.statusCode < 200 || res.statusCode >= 400) return false;
+    const normalizedUrl = resolveProductUrl_(productUrl, '');
+    const res = fetchHtmlWithEncoding_(normalizedUrl || productUrl);
+    if (res.statusCode < 200 || res.statusCode >= 400) return null;
 
-    // 쇼핑몰 템플릿에서 재고가 있을 때 품절 버튼을 HTML 주석(<!-- <p class="view_soldout">품절</p> -->)으로
-    // 감싸서 숨겨두는 경우가 많으므로 반드시 주석(<!--...-->)을 먼저 제거해야 합니다.
-    const cleanDetail = res.html
-      .replace(/<!--[\s\S]*?-->/g, '')
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '');
+    const cleanDetail = stripHiddenElements_(stripNoiseFromHtml_(res.html));
 
-    // 상세 페이지의 상품 정보/구매 버튼 영역에서 명시적 품절 표시(displaynone이 아닌 활성 품절 버튼/문구) 탐색
-    const activeSoldOutBtn = /<(?:span|div|a|button|p)[^>]*class=["'](?![^"']*displaynone)[^"']*(?:soldout|sold_out|out-of-stock)[^"']*["'][^>]*>/i.test(cleanDetail);
-    const explicitSoldOutText = /(?:현재\s*품절|품절된\s*상품|구매불가|재고가\s*없습니다|SOLD\s*OUT\s*된\s*상품)/i.test(cleanDetail);
+    // 1) 활성 품절/재입고알림 클래스 (고도몰 btn_add_soldout, btn_restock_box, 카페24/메이크샵 soldout 등)
+    const activeSoldOutClass = /<(?:span|div|a|button|p|li|em|strong|input)\b[^>]*class=["'](?![^"']*displaynone)[^"']*(?:soldout|sold_out|out-of-stock|btn_add_soldout|btn_restock_box|btn_restock_notice|btn_add_restock)[^"']*["'][^>]*>/i.test(cleanDetail);
 
-    return activeSoldOutBtn || explicitSoldOutText;
+    // 2) 버튼/배지 태그 내부 단독 품절/재입고알림 문구 (예: <button type="button" class="btn_add_soldout" disabled="disabled">품절</button>)
+    const activeSoldOutTagText = /<(?:button|a|span|p|em|strong)\b[^>]*>\s*(?:품절|일시품절|SOLD\s*OUT|OUT\s*OF\s*STOCK|재고\s*없음|판매\s*종료|구매\s*불가|재입고\s*알림(?:\s*신청)?)\s*<\/(?:button|a|span|p|em|strong)>/i.test(cleanDetail);
+
+    // 3) 상세 페이지 명시적 품절 안내 문구
+    const explicitSoldOutText = /(?:현재\s*품절|품절된\s*상품|구매불가|재고가\s*없습니다|SOLD\s*OUT\s*된\s*상품|재입고\s*알림\s*신청|재입고알림)/i.test(cleanDetail);
+
+    return activeSoldOutClass || activeSoldOutTagText || explicitSoldOutText;
   } catch (e) {
-    return false;
+    return null;
   }
 }
 
@@ -475,22 +627,23 @@ function checkDetailPageSoldOut_(productUrl) {
  * HTML에서 상품 링크 및 품절 여부 추출
  */
 function extractProductsFromHtml_(html, baseUrl) {
-  const products = [];
-  const seenUrls = new Set();
-
-  const cleanHtml = html
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '');
-
+  const cleanHtml = stripNoiseFromHtml_(html);
   const anchorRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const rawAnchors = [];
   let match;
 
   while ((match = anchorRegex.exec(cleanHtml)) !== null) {
     const rawHref = match[1].trim();
     if (!rawHref || rawHref.startsWith('javascript:') || rawHref.startsWith('#')) continue;
 
-    let innerText = match[2]
+    const textOnly = match[2]
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const innerText = match[2]
       .replace(/<img[^>]*alt=["']([^"']+)["'][^>]*>/gi, ' $1 ')
       .replace(/<[^>]+>/g, ' ')
       .replace(/&nbsp;/gi, ' ')
@@ -505,36 +658,69 @@ function extractProductsFromHtml_(html, baseUrl) {
 
     if (!isLikelyProductLink) continue;
 
-    let fullUrl = rawHref;
-    try {
-      if (rawHref.startsWith('//')) {
-        fullUrl = 'https:' + rawHref;
-      } else if (rawHref.startsWith('/')) {
-        const originMatch = baseUrl.match(/^(https?:\/\/[^/]+)/i);
-        if (originMatch) fullUrl = originMatch[1] + rawHref;
-      } else if (!/^https?:\/\//i.test(rawHref)) {
-        const baseDir = baseUrl.replace(/\/[^/]*$/, '/');
-        fullUrl = baseDir + rawHref;
+    const fullUrl = resolveProductUrl_(rawHref, baseUrl);
+    if (!fullUrl) continue;
+
+    rawAnchors.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      fullUrl: fullUrl,
+      title: textOnly.length >= 4 ? textOnly : innerText,
+      hasDirectText: textOnly.length >= 4
+    });
+  }
+
+  // 한 상품 카드 내의 연속된 동일 URL 링크(예: .item_photo_box 썸네일 <a> + .item_tit_box 상품명 <a>)를 하나의 그룹으로 병합
+  const cardGroups = [];
+  for (let i = 0; i < rawAnchors.length; i++) {
+    const curr = rawAnchors[i];
+    const prevGroup = cardGroups.length > 0 ? cardGroups[cardGroups.length - 1] : null;
+    if (prevGroup && prevGroup.fullUrl === curr.fullUrl && (curr.start - prevGroup.end) < 1200) {
+      prevGroup.end = curr.end;
+      if (curr.hasDirectText && (!prevGroup.hasDirectText || curr.title.length >= prevGroup.title.length)) {
+        prevGroup.title = curr.title;
+        prevGroup.hasDirectText = true;
       }
-    } catch (e) {
-      fullUrl = rawHref;
+    } else {
+      cardGroups.push({
+        start: curr.start,
+        end: curr.end,
+        fullUrl: curr.fullUrl,
+        title: curr.title,
+        hasDirectText: curr.hasDirectText
+      });
     }
+  }
 
-    if (seenUrls.has(fullUrl)) continue;
+  const products = [];
+  const productMap = {};
 
-    // 상품 <a> 태그 기준 앞 120자 ~ 뒤 350자(상품 카드 내 가격/아이콘/품절배지 영역) 스캔
-    const startIdx = Math.max(0, match.index - 120);
-    const endIdx = Math.min(cleanHtml.length, match.index + match[0].length + 350);
-    const surroundingChunk = cleanHtml.substring(startIdx, endIdx);
+  for (let i = 0; i < cardGroups.length; i++) {
+    const group = cardGroups[i];
+    const prevEnd = i > 0 ? cardGroups[i - 1].end : 0;
+    const nextStart = i + 1 < cardGroups.length ? cardGroups[i + 1].start : cleanHtml.length;
 
+    const surroundingChunk = findEnclosingContainer_(cleanHtml, prevEnd, group.start, group.end, nextStart);
     const isSoldOut = isChunkSoldOut_(surroundingChunk);
 
-    seenUrls.add(fullUrl);
-    products.push({
-      title: innerText,
-      url: fullUrl,
-      isSoldOut: isSoldOut
-    });
+    // 페이지 내 다른 영역(예: '오늘 본 상품' 사이드바 등)과 본문 상품 목록에 동일 URL이 중복 등장할 경우
+    // 어느 한 곳이라도 품절 배지가 감지되면 true로 반영
+    if (productMap[group.fullUrl]) {
+      if (isSoldOut) {
+        productMap[group.fullUrl].isSoldOut = true;
+      }
+      if (group.hasDirectText && group.title.length >= productMap[group.fullUrl].title.length) {
+        productMap[group.fullUrl].title = group.title;
+      }
+    } else {
+      const item = {
+        title: group.title,
+        url: group.fullUrl,
+        isSoldOut: isSoldOut
+      };
+      productMap[group.fullUrl] = item;
+      products.push(item);
+    }
   }
 
   return products;
@@ -737,19 +923,43 @@ function testWebhookConnection(discordWebhook, telegramBotToken, telegramChatId)
   return { ok: true, message: '테스트 알림을 전송했습니다. 디스코드/텔레그램을 확인해 주세요.' };
 }
 
+/**
+ * 시트의 isSoldOut 셀 값(불리언 또는 사용자가 수동 입력한 'True', 'true', 'TRUE', 1 등)을 안전하게 파싱
+ */
+function parseSoldOutValue_(val) {
+  if (val === true || val === 1) return true;
+  if (val === false || val === 0) return false;
+  const str = String(val || '').trim().toLowerCase();
+  return str === 'true' || str === '1' || str === 'yes' || str === 'y' || str === '품절';
+}
+
 function runCrawlForWatch_(watchId, userName, discordWebhook, telegramBotToken, telegramChatId, parsedRule, sites, isInitialScan) {
   isInitialScan = Boolean(isInitialScan);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const snapSheet = ss.getSheetByName(SHEET_SNAPSHOTS);
   const snapData = snapSheet.getDataRange().getValues();
 
+  // 기존 스냅샷 로드 시 '../'가 포함되었던 구버전 URL 키와 정규화된 URL 키를 모두 매핑하여
+  // 중복 행 생성이나 오탐 알림 없이 기존 행을 제자리에서 갱신하도록 처리
   const snapMap = {};
   for (let r = 1; r < snapData.length; r++) {
-    const key = snapData[r][0];
-    snapMap[key] = {
+    const rawKey = String(snapData[r][0] || '');
+    const rowWatchId = String(snapData[r][1] || '');
+    const rowSiteName = String(snapData[r][2] || '');
+    const rawProdUrl = String(snapData[r][4] || '');
+    const normProdUrl = resolveProductUrl_(rawProdUrl, '');
+    const normKey = (rowWatchId && rowSiteName && normProdUrl)
+      ? (rowWatchId + '|' + rowSiteName + '|' + normProdUrl)
+      : rawKey;
+
+    const entry = {
       rowNumber: r + 1,
-      isSoldOut: snapData[r][5] === true || snapData[r][5] === 'TRUE'
+      rawKey: rawKey,
+      rawProdUrl: rawProdUrl,
+      isSoldOut: parseSoldOutValue_(snapData[r][5])
     };
+    if (rawKey) snapMap[rawKey] = entry;
+    if (normKey) snapMap[normKey] = entry;
   }
 
   const matchedResults = [];
@@ -764,17 +974,29 @@ function runCrawlForWatch_(watchId, userName, discordWebhook, telegramBotToken, 
       products.forEach(prod => {
         if (!matchesKeywordRule(prod.title, parsedRule)) return;
 
-        // 목록에서 품절 표시가 없더라도 상세 페이지에서 품절인지 2차 확인
-        let finalSoldOut = prod.isSoldOut;
-        if (!finalSoldOut) {
-          finalSoldOut = checkDetailPageSoldOut_(prod.url);
-        }
-
         const snapKey = watchId + '|' + site.siteName + '|' + prod.url;
         const prev = snapMap[snapKey];
 
+        // 1단계 목록 스캔에서 품절이 아니더라도 2단계 상세 페이지 교차 검증 수행
+        let finalSoldOut = prod.isSoldOut;
+        if (!finalSoldOut) {
+          const detailSoldOut = checkDetailPageSoldOut_(prod.url);
+          if (detailSoldOut === true) {
+            finalSoldOut = true;
+          } else if (detailSoldOut === null && prev) {
+            // 상세 페이지 일시적 통신 실패 시 기존 스냅샷 상태(또는 수동 설정한 True)를 덮어쓰지 않고 보존
+            finalSoldOut = prev.isSoldOut;
+          }
+        }
+
         if (!prev) {
           snapSheet.appendRow([snapKey, watchId, site.siteName, prod.title, prod.url, finalSoldOut, now]);
+          snapMap[snapKey] = {
+            rowNumber: snapSheet.getLastRow(),
+            rawKey: snapKey,
+            rawProdUrl: prod.url,
+            isSoldOut: finalSoldOut
+          };
           if (!finalSoldOut) {
             // 최초 등록 스캔(isInitialScan=true) 시에는 알림을 보내지 않고 기준선으로만 등록!
             if (!isInitialScan) {
@@ -800,8 +1022,19 @@ function runCrawlForWatch_(watchId, userName, discordWebhook, telegramBotToken, 
             );
             matchedResults.push({ type: 'RESTOCK', site: site.siteName, title: prod.title, url: prod.url });
           }
+
+          // 구버전 '../' URL이 저장되어 있던 행이면 정규화된 snapshotKey와 productUrl도 함께 정리
+          if (prev.rawKey !== snapKey) {
+            snapSheet.getRange(prev.rowNumber, 1).setValue(snapKey);
+            prev.rawKey = snapKey;
+          }
+          if (prev.rawProdUrl !== prod.url) {
+            snapSheet.getRange(prev.rowNumber, 5).setValue(prod.url);
+            prev.rawProdUrl = prod.url;
+          }
           snapSheet.getRange(prev.rowNumber, 6).setValue(finalSoldOut);
           snapSheet.getRange(prev.rowNumber, 7).setValue(now);
+          prev.isSoldOut = finalSoldOut;
         }
       });
     } catch (e) {
