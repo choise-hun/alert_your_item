@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>멀티 쇼핑몰 신상품 & 재입고 알리미</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --danger: #dc2626;
+      --success: #16a34a;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+      --highlight: #eff6ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 24px 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      background: var(--bg); color: var(--text);
+    }
+    .container { max-width: 760px; margin: 0 auto; }
+    h1 { font-size: 1.6rem; margin-bottom: 6px; }
+    .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 16px; line-height: 1.5; }
+    
+    /* GAS 연동 설정 바 */
+    .config-card {
+      background: #f1f5f9; border: 1px solid #cbd5e1;
+      border-radius: 12px; padding: 14px 18px; margin-bottom: 16px;
+    }
+    .config-card label {
+      font-size: 0.85rem; font-weight: 700; color: #334155; display: flex; align-items: center; justify-content: space-between;
+    }
+    .config-badge {
+      font-size: 0.75rem; padding: 2px 8px; border-radius: 6px; font-weight: 600;
+    }
+    .config-badge.ready { background: #dcfce7; color: #15803d; }
+    .config-badge.needed { background: #fee2e2; color: #b91c1c; }
+
+    .tip-banner {
+      background: var(--highlight); border: 1px solid #bfdbfe; color: #1e3a8a;
+      border-radius: 10px; padding: 12px 14px; font-size: 0.86rem; line-height: 1.55;
+      margin-bottom: 18px;
+    }
+    .tip-banner strong { color: #1d4ed8; }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px; margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+    .card h2 { font-size: 1.05rem; margin: 0 0 14px 0; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .helper-desc { font-size: 0.83rem; color: var(--muted); margin-bottom: 12px; line-height: 1.45; }
+    label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 6px; color: #334155; }
+    input[type="text"], input[type="url"] {
+      width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: 8px; font-size: 0.92rem; margin-bottom: 12px;
+      background: #fff;
+    }
+    input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(37,99,235,0.15); }
+    .row { display: flex; gap: 8px; align-items: flex-start; }
+    .row input { flex: 1; margin-bottom: 0; }
+    button {
+      padding: 10px 16px; border-radius: 8px; border: none; font-weight: 600;
+      cursor: pointer; font-size: 0.9rem; background: var(--primary); color: #fff;
+      white-space: nowrap; transition: background 0.15s ease;
+    }
+    button:hover { background: var(--primary-hover); }
+    button.secondary { background: #475569; }
+    button.secondary:hover { background: #334155; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .status-msg { font-size: 0.85rem; margin-top: 8px; font-weight: 600; }
+    .status-error { color: var(--danger); }
+    .status-ok { color: var(--success); }
+    .tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .tag {
+      background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe;
+      padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 500;
+    }
+    .site-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 12px; background: #f1f5f9; border-radius: 8px; margin-top: 8px; font-size: 0.88rem;
+    }
+    .site-item button { background: var(--danger); padding: 4px 10px; font-size: 0.78rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎸 멀티 쇼핑몰 신상품 & 재입고 알리미</h1>
+    <div class="subtitle">동일 상품을 여러 웹사이트(뮤직포스, 버즈비, 프리버드 등)에서 동시 감시하고 웹훅으로 즉시 알림을 받습니다.</div>
+
+    <!-- GAS 웹앱 연동 URL 설정 카드 (GitHub Pages 배포 시 유용) -->
+    <div class="config-card">
+      <label for="gasUrlInput">
+        <span>⚙️ Google Apps Script (GAS) 웹앱 URL</span>
+        <span id="gasStatusBadge" class="config-badge needed">URL 설정 필요</span>
+      </label>
+      <div class="row" style="margin-top: 6px;">
+        <input type="url" id="gasUrlInput" placeholder="https://script.google.com/macros/s/.../exec" oninput="saveGasUrl()" />
+        <button type="button" class="secondary" onclick="saveGasUrl(true)">저장</button>
+      </div>
+      <div style="font-size: 0.78rem; color: var(--muted); margin-top: 6px;">
+        ※ GAS에서 <strong>[새 배포 > 웹 앱 > 액세스: 모든 사용자(Anyone)]</strong>로 배포한 URL을 입력하면 로컬 브라우저에 자동 저장됩니다.
+      </div>
+    </div>
+
+    <div class="tip-banner">
+      💡 <strong>권장 등록 팁:</strong> 실제 감시할 쇼핑몰에 등록하실 때는 각 쇼핑몰의 전체 메인 주소(홈페이지 루트)보다
+      <strong>브랜드 카테고리 페이지</strong>나 <strong>특정 모델(예: <code>jaguar</code>) 검색 결과 페이지 URL</strong>을 넣으시면 훨씬 빠르고 정확하게 신상품과 재입고를 감지할 수 있습니다.
+    </div>
+
+    <!-- 1. 유저 정보 및 디스코드/텔레그램 웹훅 등록 -->
+    <div class="card">
+      <h2>1. 유저 정보 & 디스코드 / 텔레그램 웹훅 설정</h2>
+      <label>유저 이름 (별칭)</label>
+      <input type="text" id="userName" placeholder="예: 홍길동 (guitar_hunter)" />
+
+      <label>디스코드 웹훅 URL (선택)</label>
+      <input type="url" id="discordWebhook" placeholder="https://discord.com/api/webhooks/..." />
+
+      <div class="row" style="margin-bottom: 12px;">
+        <div style="flex:1;">
+          <label>텔레그램 봇 토큰 (선택)</label>
+          <input type="text" id="telegramBotToken" placeholder="123456789:ABCdef..." />
+        </div>
+        <div style="flex:1;">
+          <label>텔레그램 Chat ID (선택)</label>
+          <input type="text" id="telegramChatId" placeholder="예: 987654321" />
+        </div>
+      </div>
+      <button type="button" class="secondary" onclick="handleTestWebhook()">🔔 웹훅 테스트 발송</button>
+      <div id="webhookStatus" class="status-msg"></div>
+    </div>
+
+    <!-- 2. 상품 키워드 등록 (한글/영문 파싱 및 경우의 수 자동 생성) -->
+    <div class="card">
+      <h2>2. 상품 키워드 등록 (한/영 및 파생 키워드 자동 확장)</h2>
+      <label>영문 키워드 입력</label>
+      <input type="text" id="keywordsEn" placeholder="예: fender vinteraiii jaguar" oninput="updateKeywordPreview()" />
+
+      <label>한글 키워드 입력</label>
+      <input type="text" id="keywordsKo" placeholder="예: 펜더 빈테라3 재규어" oninput="updateKeywordPreview()" />
+
+      <div style="font-size:0.83rem; color:var(--muted);">자동 생성된 검색 파생 키워드 (모두 등록 및 조합 검증):</div>
+      <div id="keywordPreview" class="tag-list"></div>
+    </div>
+
+    <!-- 3. 감시할 웹사이트 등록 (즉시 크롤링 가능 여부 테스트) -->
+    <div class="card">
+      <h2>3. 모니터링 대상 웹사이트 등록 (동일 상품 다중 사이트 지원)</h2>
+      <div class="helper-desc">
+        ※ 쇼핑몰 메인 주소 대신 <strong>브랜드별 카테고리 목록 URL</strong> 또는 <strong>검색 결과 페이지 URL</strong>을 입력해 주세요. [등록] 클릭 시 즉시 크롤링 가능 여부를 테스트합니다.
+      </div>
+      <div class="row">
+        <input type="text" id="siteNameInput" placeholder="사이트 별칭 (예: musicforce)" style="max-width: 190px;" />
+        <input type="url" id="siteUrlInput" placeholder="검색/카테고리 페이지 URL (https://...)" />
+        <button type="button" id="verifyBtn" onclick="handleAddWebsite()">등록</button>
+      </div>
+      <div id="siteVerifyMessage" class="status-msg"></div>
+      <div id="registeredSitesList"></div>
+    </div>
+
+    <button type="button" style="width:100%; padding:14px; font-size:1rem;" onclick="handleSubmitAll()">
+      🚀 모니터링 작업 최종 등록 및 첫 스캔 시작
+    </button>
+    <div id="finalStatus" class="status-msg"></div>
+  </div>
+
+  <script>
+    const STORAGE_KEY_GAS_URL = 'ALERT_MONITOR_GAS_URL';
+    const verifiedSites = [];
+
+    // 페이지 로드 시 localStorage에서 GAS URL 복원
+    window.addEventListener('DOMContentLoaded', () => {
+      const savedUrl = localStorage.getItem(STORAGE_KEY_GAS_URL) || '';
+      const input = document.getElementById('gasUrlInput');
+      if (savedUrl) {
+        input.value = savedUrl;
+      }
+      updateGasStatusBadge();
+    });
+
+    function saveGasUrl(showMessage = false) {
+      const input = document.getElementById('gasUrlInput');
+      const url = input.value.trim();
+      localStorage.setItem(STORAGE_KEY_GAS_URL, url);
+      updateGasStatusBadge();
+      if (showMessage) {
+        alert(url ? '✅ GAS URL이 저장되었습니다.' : 'GAS URL이 비워졌습니다.');
+      }
+    }
+
+    function getGasUrl() {
+      const input = document.getElementById('gasUrlInput');
+      return (input ? input.value.trim() : '') || localStorage.getItem(STORAGE_KEY_GAS_URL) || '';
+    }
+
+    function updateGasStatusBadge() {
+      const badge = document.getElementById('gasStatusBadge');
+      const url = getGasUrl();
+      if (url.startsWith('http://') || url.startsWith('https://')) {
+        badge.className = 'config-badge ready';
+        badge.textContent = '연결 준비 완료';
+      } else {
+        badge.className = 'config-badge needed';
+        badge.textContent = 'URL 설정 필요';
+      }
+    }
+
+    function callBackend(action, params, onSuccess, onError) {
+      // 1. GAS 내장 웹앱 환경일 경우 (google.script.run)
+      if (typeof google !== 'undefined' && google.script && google.script.run) {
+        const runner = google.script.run
+          .withSuccessHandler(onSuccess)
+          .withFailureHandler(onError || (err => console.error(err)));
+
+        if (action === 'previewKeywordExpansion') {
+          runner.previewKeywordExpansion(params.rawKeywordsEn, params.rawKeywordsKo);
+        } else if (action === 'verifyWebsiteCrawlable') {
+          runner.verifyWebsiteCrawlable(params.siteName, params.siteUrl);
+        } else if (action === 'testWebhookConnection') {
+          runner.testWebhookConnection(params.discordWebhook, params.telegramBotToken, params.telegramChatId);
+        } else if (action === 'saveUserAndWatch') {
+          runner.saveUserAndWatch(params.payload);
+        }
+        return;
+      }
+
+      // 2. 외부 정적 호스팅(GitHub Pages / localhost)일 경우
+      const endpoint = getGasUrl();
+      if (!endpoint) {
+        const errMsg = '상단의 [Google Apps Script (GAS) 웹앱 URL]에 배포된 URL을 먼저 입력해 주세요.';
+        if (onError) onError(new Error(errMsg));
+        alert(errMsg);
+        return;
+      }
+
+      // 브라우저 CORS Preflight(OPTIONS) 차단을 피하기 위해 text/plain 으로 POST 전송
+      fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(Object.assign({ action: action }, params))
+      })
+        .then(r => r.json())
+        .then(res => {
+          if (onSuccess) onSuccess(res);
+        })
+        .catch(err => {
+          console.error('API Call Error:', err);
+          if (onError) onError(err);
+        });
+    }
+
+    let keywordDebounceTimer = null;
+    function updateKeywordPreview() {
+      clearTimeout(keywordDebounceTimer);
+      keywordDebounceTimer = setTimeout(() => {
+        const en = document.getElementById('keywordsEn').value;
+        const ko = document.getElementById('keywordsKo').value;
+        if (!en.trim() && !ko.trim()) {
+          document.getElementById('keywordPreview').innerHTML = '';
+          return;
+        }
+
+        callBackend(
+          'previewKeywordExpansion',
+          { rawKeywordsEn: en, rawKeywordsKo: ko },
+          res => {
+            const container = document.getElementById('keywordPreview');
+            container.innerHTML = '';
+            (res.allExpandedKeywords || []).forEach(kw => {
+              const span = document.createElement('span');
+              span.className = 'tag';
+              span.textContent = kw;
+              container.appendChild(span);
+            });
+          },
+          err => {
+            // 키워드 확장은 입력 중 실패해도 콘솔에만 기록
+            console.warn('키워드 확장 미리보기 실패:', err);
+          }
+        );
+      }, 300);
+    }
+
+    function handleAddWebsite() {
+      const siteName = document.getElementById('siteNameInput').value.trim();
+      const siteUrl = document.getElementById('siteUrlInput').value.trim();
+      const msgEl = document.getElementById('siteVerifyMessage');
+      const btn = document.getElementById('verifyBtn');
+
+      if (!siteUrl) {
+        msgEl.className = 'status-msg status-error';
+        msgEl.textContent = '사이트 URL을 입력해 주세요.';
+        return;
+      }
+
+      btn.disabled = true;
+      msgEl.className = 'status-msg';
+      msgEl.textContent = '⏳ 해당 웹사이트 크롤링 가능 여부를 테스트 중입니다...';
+
+      callBackend(
+        'verifyWebsiteCrawlable',
+        { siteName: siteName, siteUrl: siteUrl },
+        res => {
+          btn.disabled = false;
+          if (!res.ok) {
+            msgEl.className = 'status-msg status-error';
+            msgEl.textContent = '❌ ' + res.message + (res.detail ? ' (' + res.detail + ')' : '');
+            alert(res.message + '\n사유: ' + (res.detail || '크롤링 차단 또는 동적 렌더링 사이트'));
+            return;
+          }
+
+          msgEl.className = 'status-msg status-ok';
+          msgEl.textContent = '✅ ' + res.message;
+          verifiedSites.push({ siteName: res.siteName, siteUrl: res.siteUrl });
+          document.getElementById('siteNameInput').value = '';
+          document.getElementById('siteUrlInput').value = '';
+          renderSites();
+        },
+        err => {
+          btn.disabled = false;
+          msgEl.className = 'status-msg status-error';
+          msgEl.textContent = '❌ 서비스 불가능한 사이트이거나 GAS URL 연결 오류입니다.';
+          alert('요청 실패: GAS 배포 URL이 올바른지, 접근 권한이 "모든 사용자(Anyone)"로 되어 있는지 확인해 주세요.');
+        }
+      );
+    }
+
+    function renderSites() {
+      const listEl = document.getElementById('registeredSitesList');
+      listEl.innerHTML = '';
+      verifiedSites.forEach((s, idx) => {
+        const div = document.createElement('div');
+        div.className = 'site-item';
+        div.innerHTML = '<span><strong>[' + escapeHtml(s.siteName) + ']</strong> ' + escapeHtml(s.siteUrl) + '</span>' +
+                        '<button type="button" onclick="removeSite(' + idx + ')">삭제</button>';
+        listEl.appendChild(div);
+      });
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text || '';
+      return div.innerHTML;
+    }
+
+    function removeSite(idx) {
+      verifiedSites.splice(idx, 1);
+      renderSites();
+    }
+
+    function handleTestWebhook() {
+      const discord = document.getElementById('discordWebhook').value.trim();
+      const tgToken = document.getElementById('telegramBotToken').value.trim();
+      const tgChat = document.getElementById('telegramChatId').value.trim();
+      const statusEl = document.getElementById('webhookStatus');
+
+      if (!discord && (!tgToken || !tgChat)) {
+        alert('디스코드 웹훅 또는 텔레그램(봇 토큰 + Chat ID) 중 하나 이상을 입력해 주세요.');
+        return;
+      }
+
+      statusEl.className = 'status-msg';
+      statusEl.textContent = '⏳ 테스트 메시지 발송 중...';
+      callBackend(
+        'testWebhookConnection',
+        { discordWebhook: discord, telegramBotToken: tgToken, telegramChatId: tgChat },
+        res => {
+          statusEl.className = res.ok ? 'status-msg status-ok' : 'status-msg status-error';
+          statusEl.textContent = (res.ok ? '✅ ' : '❌ ') + res.message;
+        },
+        err => {
+          statusEl.className = 'status-msg status-error';
+          statusEl.textContent = '❌ 웹훅 전송 실패: GAS URL 또는 네트워크를 확인해 주세요.';
+        }
+      );
+    }
+
+    function handleSubmitAll() {
+      const userName = document.getElementById('userName').value.trim();
+      const discordWebhook = document.getElementById('discordWebhook').value.trim();
+      const telegramBotToken = document.getElementById('telegramBotToken').value.trim();
+      const telegramChatId = document.getElementById('telegramChatId').value.trim();
+      const rawKeywordsEn = document.getElementById('keywordsEn').value.trim();
+      const rawKeywordsKo = document.getElementById('keywordsKo').value.trim();
+      const finalEl = document.getElementById('finalStatus');
+
+      if (!userName) {
+        alert('유저 이름을 입력해 주세요.');
+        return;
+      }
+      if (!rawKeywordsEn && !rawKeywordsKo) {
+        alert('영문 또는 한글 상품 키워드를 입력해 주세요.');
+        return;
+      }
+      if (verifiedSites.length === 0) {
+        alert('최소 1개 이상의 크롤링 가능한 웹사이트를 등록해 주세요.');
+        return;
+      }
+
+      finalEl.className = 'status-msg';
+      finalEl.textContent = '⏳ 모니터링 규칙 저장 및 초기 스캔 중...';
+
+      callBackend(
+        'saveUserAndWatch',
+        {
+          payload: {
+            userName,
+            discordWebhook,
+            telegramBotToken,
+            telegramChatId,
+            rawKeywordsEn,
+            rawKeywordsKo,
+            sites: verifiedSites
+          }
+        },
+        res => {
+          if (!res.ok) {
+            finalEl.className = 'status-msg status-error';
+            finalEl.textContent = '❌ 등록 실패: ' + res.message;
+            return;
+          }
+          finalEl.className = 'status-msg status-ok';
+          finalEl.textContent = '🎉 등록 완료! 확장 키워드(' + (res.expandedKeywords || []).join(', ') + ')로 ' +
+            verifiedSites.length + '개 사이트 감시를 시작했습니다. (초기 매칭 상품: ' + (res.scanSummary ? res.scanSummary.length : 0) + '건)';
+        },
+        err => {
+          finalEl.className = 'status-msg status-error';
+          finalEl.textContent = '❌ 서버 처리 중 오류가 발생했습니다.';
+        }
+      );
+    }
+  </script>
+</body>
+</html>
