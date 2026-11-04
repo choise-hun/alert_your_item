@@ -149,7 +149,7 @@ function expandSingleToken(rawToken) {
   };
 }
 
-function buildKeywordRules(rawKeywordsEn, rawKeywordsKo) {
+function buildSingleKeywordRule(rawKeywordsEn, rawKeywordsKo) {
   const splitTokens = str => String(str || '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
   const mergeVersionTokens = tokens => {
     const merged = [];
@@ -223,14 +223,42 @@ function buildKeywordRules(rawKeywordsEn, rawKeywordsKo) {
   };
 }
 
-function matchesKeywordRule(productTitle, parsedRule) {
-  if (!productTitle || !parsedRule || !parsedRule.conceptGroups || !parsedRule.conceptGroups.length) {
+function buildKeywordRules(rawKeywordsEn, rawKeywordsKo) {
+  const splitClauses = str => String(str || '').split(/[;\n|]+/).map(s => s.trim()).filter(Boolean);
+  const enClauses = splitClauses(rawKeywordsEn);
+  const koClauses = splitClauses(rawKeywordsKo);
+  const maxClauses = Math.max(enClauses.length, koClauses.length, 1);
+
+  const subRules = [];
+  const globalExpanded = new Set();
+
+  for (let c = 0; c < maxClauses; c++) {
+    const en = enClauses[c] || (enClauses.length === 1 ? enClauses[0] : '');
+    const ko = koClauses[c] || (koClauses.length === 1 ? koClauses[0] : '');
+    if (!en && !ko) continue;
+
+    const single = buildSingleKeywordRule(en, ko);
+    single.allExpandedKeywords.forEach(k => globalExpanded.add(k));
+    subRules.push(single);
+  }
+
+  return {
+    rawKeywordsEn: rawKeywordsEn || '',
+    rawKeywordsKo: rawKeywordsKo || '',
+    allExpandedKeywords: Array.from(globalExpanded),
+    conceptGroups: subRules[0] ? subRules[0].conceptGroups : [],
+    subRules
+  };
+}
+
+function matchesSingleRule(productTitle, singleRule) {
+  if (!productTitle || !singleRule || !singleRule.conceptGroups || !singleRule.conceptGroups.length) {
     return false;
   }
   const normalizedTitle = String(productTitle).toLowerCase().replace(/\s+/g, ' ').trim();
   const compactTitle = normalizedTitle.replace(/[\s\-_]/g, '');
 
-  return parsedRule.conceptGroups.every(group => {
+  return singleRule.conceptGroups.every(group => {
     if (group.hasVersion && group.baseVariants.length > 0) {
       const directCombinedMatch = group.combinedVariants.some(cv =>
         compactTitle.includes(cv.replace(/[\s\-_]/g, ''))
@@ -249,6 +277,14 @@ function matchesKeywordRule(productTitle, parsedRule) {
     return group.baseVariants.some(b => normalizedTitle.includes(b)) ||
            group.combinedVariants.some(c => normalizedTitle.includes(c));
   });
+}
+
+function matchesKeywordRule(productTitle, parsedRule) {
+  if (!productTitle || !parsedRule) return false;
+  if (parsedRule.subRules && parsedRule.subRules.length > 0) {
+    return parsedRule.subRules.some(sub => matchesSingleRule(productTitle, sub));
+  }
+  return matchesSingleRule(productTitle, parsedRule);
 }
 
 // ----------------------------------------------------------------------------
@@ -364,7 +400,7 @@ async function sendNotification(watch, alertType, product, site) {
   }
 }
 
-async function runWatchScan(watch) {
+async function runWatchScan(watch, isInitialScan = false) {
   const db = loadDb();
   const matched = [];
 
@@ -392,10 +428,16 @@ async function runWatchScan(watch) {
             updatedAt: new Date().toISOString()
           };
           if (!finalSoldOut) {
-            await sendNotification(watch, 'NEW', prod, site);
-            matched.push({ type: 'NEW', site: site.siteName, title: prod.title, url: prod.url });
+            // 최초 등록 스캔(isInitialScan=true) 시에는 알림을 보내지 않고 기준선(Baseline)으로만 등록
+            if (!isInitialScan) {
+              await sendNotification(watch, 'NEW', prod, site);
+              matched.push({ type: 'NEW', site: site.siteName, title: prod.title, url: prod.url });
+            } else {
+              matched.push({ type: 'BASELINE', site: site.siteName, title: prod.title, url: prod.url });
+            }
           }
         } else {
+          // 기존에 품절이었다가 구매가능으로 전환 시 재입고 알림
           if (prev.isSoldOut && !finalSoldOut) {
             await sendNotification(watch, 'RESTOCK', prod, site);
             matched.push({ type: 'RESTOCK', site: site.siteName, title: prod.title, url: prod.url });
@@ -477,12 +519,13 @@ app.post('/api/watches', async (req, res) => {
   db.watches.push(watch);
   saveDb(db);
 
-  const initialMatches = await runWatchScan(watch);
+  const initialMatches = await runWatchScan(watch, true);
   res.json({
     ok: true,
     watchId: watch.watchId,
     expandedKeywords: parsedRule.allExpandedKeywords,
-    initialMatches
+    baselineMatches: initialMatches,
+    baselineCount: initialMatches.length
   });
 });
 

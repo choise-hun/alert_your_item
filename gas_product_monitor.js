@@ -225,9 +225,9 @@ function expandSingleToken_(rawToken) {
 }
 
 /**
- * 사용자의 한글/영문 키워드 입력을 받아 검색 규칙(Rule) 객체 생성
+ * 단일 문장 키워드를 받아 conceptGroups 규칙 생성
  */
-function buildKeywordRules(rawKeywordsEn, rawKeywordsKo) {
+function buildSingleKeywordRule_(rawKeywordsEn, rawKeywordsKo) {
   const enTokens = String(rawKeywordsEn || '')
     .split(/[\s,]+/)
     .map(s => s.trim())
@@ -310,17 +310,55 @@ function buildKeywordRules(rawKeywordsEn, rawKeywordsKo) {
 }
 
 /**
- * 상품명이 확장된 키워드 조건(Rule)에 부합하는지 확인
+ * 사용자의 한글/영문 키워드 입력을 받아 검색 규칙(Rule) 객체 생성
+ * - 세미콜론(;), 줄바꿈(\n), 파이프(|) 구분자를 지원하여 여러 상품 키워드 묶음(OR 조건)을 생성합니다.
  */
-function matchesKeywordRule(productTitle, parsedRule) {
-  if (!productTitle || !parsedRule || !parsedRule.conceptGroups || parsedRule.conceptGroups.length === 0) {
+function buildKeywordRules(rawKeywordsEn, rawKeywordsKo) {
+  const splitClauses = (str) => {
+    return String(str || '')
+      .split(/[;\n|]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+  };
+
+  const enClauses = splitClauses(rawKeywordsEn);
+  const koClauses = splitClauses(rawKeywordsKo);
+  const maxClauses = Math.max(enClauses.length, koClauses.length, 1);
+
+  const subRules = [];
+  const globalExpanded = new Set();
+
+  for (let c = 0; c < maxClauses; c++) {
+    const en = enClauses[c] || (enClauses.length === 1 ? enClauses[0] : '');
+    const ko = koClauses[c] || (koClauses.length === 1 ? koClauses[0] : '');
+    if (!en && !ko) continue;
+
+    const single = buildSingleKeywordRule_(en, ko);
+    single.allExpandedKeywords.forEach(k => globalExpanded.add(k));
+    subRules.push(single);
+  }
+
+  return {
+    rawKeywordsEn: rawKeywordsEn || '',
+    rawKeywordsKo: rawKeywordsKo || '',
+    allExpandedKeywords: Array.from(globalExpanded),
+    conceptGroups: subRules[0] ? subRules[0].conceptGroups : [],
+    subRules: subRules
+  };
+}
+
+/**
+ * 단일 규칙 매칭 검사
+ */
+function matchesSingleRule_(productTitle, singleRule) {
+  if (!productTitle || !singleRule || !singleRule.conceptGroups || singleRule.conceptGroups.length === 0) {
     return false;
   }
 
   const normalizedTitle = String(productTitle).toLowerCase().replace(/\s+/g, ' ').trim();
   const compactTitle = normalizedTitle.replace(/[\s\-_]/g, '');
 
-  return parsedRule.conceptGroups.every(group => {
+  return singleRule.conceptGroups.every(group => {
     if (group.hasVersion && group.baseVariants.length > 0) {
       const directCombinedMatch = group.combinedVariants.some(cv => {
         const cleanCv = cv.replace(/[\s\-_]/g, '');
@@ -342,6 +380,19 @@ function matchesKeywordRule(productTitle, parsedRule) {
     return group.baseVariants.some(b => normalizedTitle.includes(b)) ||
            group.combinedVariants.some(c => normalizedTitle.includes(c));
   });
+}
+
+/**
+ * 상품명이 확장된 키워드 조건(Rule)에 부합하는지 확인 (다중 subRules OR 조건 지원)
+ */
+function matchesKeywordRule(productTitle, parsedRule) {
+  if (!productTitle || !parsedRule) return false;
+
+  if (parsedRule.subRules && parsedRule.subRules.length > 0) {
+    return parsedRule.subRules.some(sub => matchesSingleRule_(productTitle, sub));
+  }
+
+  return matchesSingleRule_(productTitle, parsedRule);
 }
 
 function previewKeywordExpansion(rawKeywordsEn, rawKeywordsKo) {
@@ -564,14 +615,30 @@ function saveUserAndWatch(payload) {
   const now = new Date().toISOString();
   const userId = payload.userName.trim().toLowerCase().replace(/\s+/g, '_');
 
-  userSheet.appendRow([
+  // 동일한 유저가 있을 경우 정보를 갱신하고, 없을 경우 신규 추가
+  const userData = userSheet.getDataRange().getValues();
+  let userRow = -1;
+  for (let i = 1; i < userData.length; i++) {
+    if (userData[i][0] === userId) {
+      userRow = i + 1;
+      break;
+    }
+  }
+
+  const userRowValues = [
     userId,
     payload.userName.trim(),
     payload.discordWebhook || '',
     payload.telegramBotToken || '',
     payload.telegramChatId || '',
     now
-  ]);
+  ];
+
+  if (userRow > 0) {
+    userSheet.getRange(userRow, 1, 1, 6).setValues([userRowValues]);
+  } else {
+    userSheet.appendRow(userRowValues);
+  }
 
   const parsedRule = buildKeywordRules(payload.rawKeywordsEn, payload.rawKeywordsKo);
   const watchId = 'W_' + new Date().getTime();
@@ -588,6 +655,7 @@ function saveUserAndWatch(payload) {
     ''
   ]);
 
+  // 최초 등록 시 알림 폭탄 방지: 기존에 존재하는 상품들은 기준선(Baseline)으로만 등록하고 알림은 보내지 않음
   const scanSummary = runCrawlForWatch_(
     watchId,
     payload.userName.trim(),
@@ -595,14 +663,16 @@ function saveUserAndWatch(payload) {
     payload.telegramBotToken,
     payload.telegramChatId,
     parsedRule,
-    payload.sites || []
+    payload.sites || [],
+    true // isInitialScan = true
   );
 
   return {
     ok: true,
     watchId: watchId,
     expandedKeywords: parsedRule.allExpandedKeywords,
-    scanSummary: scanSummary
+    scanSummary: scanSummary,
+    baselineCount: scanSummary.length
   };
 }
 
@@ -663,7 +733,8 @@ function testWebhookConnection(discordWebhook, telegramBotToken, telegramChatId)
   return { ok: true, message: '테스트 알림을 전송했습니다. 디스코드/텔레그램을 확인해 주세요.' };
 }
 
-function runCrawlForWatch_(watchId, userName, discordWebhook, telegramBotToken, telegramChatId, parsedRule, sites) {
+function runCrawlForWatch_(watchId, userName, discordWebhook, telegramBotToken, telegramChatId, parsedRule, sites, isInitialScan) {
+  isInitialScan = Boolean(isInitialScan);
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const snapSheet = ss.getSheetByName(SHEET_SNAPSHOTS);
   const snapData = snapSheet.getDataRange().getValues();
@@ -701,15 +772,21 @@ function runCrawlForWatch_(watchId, userName, discordWebhook, telegramBotToken, 
         if (!prev) {
           snapSheet.appendRow([snapKey, watchId, site.siteName, prod.title, prod.url, finalSoldOut, now]);
           if (!finalSoldOut) {
-            sendWebhookNotification_(
-              { discordWebhook, telegramBotToken, telegramChatId },
-              '신상품/구매가능 상품이 감지되었습니다!',
-              prod,
-              site
-            );
-            matchedResults.push({ type: 'NEW', site: site.siteName, title: prod.title, url: prod.url });
+            // 최초 등록 스캔(isInitialScan=true) 시에는 알림을 보내지 않고 기준선으로만 등록!
+            if (!isInitialScan) {
+              sendWebhookNotification_(
+                { discordWebhook, telegramBotToken, telegramChatId },
+                '신상품/구매가능 상품이 감지되었습니다!',
+                prod,
+                site
+              );
+              matchedResults.push({ type: 'NEW', site: site.siteName, title: prod.title, url: prod.url });
+            } else {
+              matchedResults.push({ type: 'BASELINE', site: site.siteName, title: prod.title, url: prod.url });
+            }
           }
         } else {
+          // 기존 스냅샷이 품절(true)이었다가 이번 스캔에서 구매가능(false)으로 변경된 경우 -> 재입고 알림 발송
           if (prev.isSoldOut && !finalSoldOut) {
             sendWebhookNotification_(
               { discordWebhook, telegramBotToken, telegramChatId },
@@ -885,11 +962,14 @@ function getHtmlTemplate_() {
     <!-- 2. 상품 키워드 등록 (한글/영문 파싱 및 경우의 수 자동 생성) -->
     <div class="card">
       <h2>2. 상품 키워드 등록 (한/영 및 파생 키워드 자동 확장)</h2>
+      <div class="helper-desc">
+        💡 <strong>다중 키워드 등록 팁:</strong> 세미콜론(<code>;</code>) 또는 엔터로 구분하면 동일한 사이트 묶음에 대해 여러 상품을 한 번에 감시할 수 있습니다. (예: <code>fender jaguar ; fender jazzmaster</code>)
+      </div>
       <label>영문 키워드 입력</label>
-      <input type="text" id="keywordsEn" placeholder="예: fender vinteraiii jaguar" oninput="updateKeywordPreview()" />
+      <input type="text" id="keywordsEn" placeholder="예: fender jaguar ; fender jazzmaster" oninput="updateKeywordPreview()" />
 
       <label>한글 키워드 입력</label>
-      <input type="text" id="keywordsKo" placeholder="예: 펜더 빈테라3 재규어" oninput="updateKeywordPreview()" />
+      <input type="text" id="keywordsKo" placeholder="예: 펜더 재규어 ; 펜더 재즈마스터" oninput="updateKeywordPreview()" />
 
       <div style="font-size:0.83rem; color:var(--muted);">자동 생성된 검색 파생 키워드 (모두 등록 및 조합 검증):</div>
       <div id="keywordPreview" class="tag-list"></div>
@@ -1095,8 +1175,10 @@ function getHtmlTemplate_() {
         },
         res => {
           finalEl.className = 'status-msg status-ok';
-          finalEl.textContent = '🎉 등록 완료! 확장 키워드(' + res.expandedKeywords.join(', ') + ')로 ' +
-            verifiedSites.length + '개 사이트 감시를 시작했습니다. (초기 매칭 상품: ' + res.scanSummary.length + '건)';
+          const baselineText = (res.baselineCount !== undefined ? res.baselineCount : (res.scanSummary ? res.scanSummary.length : 0));
+          finalEl.innerHTML = '🎉 <strong>모니터링 등록 완료!</strong> 확장 키워드(' + (res.expandedKeywords || []).join(', ') + ')로 ' +
+            verifiedSites.length + '개 사이트 감시를 시작했습니다.<br>' +
+            '🛡️ <em>최초 등록 알림 방지 적용:</em> 기존 판매 중인 상품 ' + baselineText + '건을 기준선(Baseline)으로 등록했습니다. (기존 상품 알림은 가지 않으며, 이후 새로 올라온 신상품이나 재입고 상품부터 실시간 알림이 발송됩니다.)';
         }
       );
     }

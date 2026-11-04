@@ -108,8 +108,9 @@
     </div>
 
     <div class="tip-banner">
-      💡 <strong>권장 등록 팁:</strong> 실제 감시할 쇼핑몰에 등록하실 때는 각 쇼핑몰의 전체 메인 주소(홈페이지 루트)보다
-      <strong>브랜드 카테고리 페이지</strong>나 <strong>특정 모델(예: <code>jaguar</code>) 검색 결과 페이지 URL</strong>을 넣으시면 훨씬 빠르고 정확하게 신상품과 재입고를 감지할 수 있습니다.
+      💡 <strong>권장 등록 팁:</strong><br>
+      • <strong>링크 입력:</strong> 쇼핑몰 전체 메인 주소보다 <strong>브랜드 카테고리 페이지</strong>나 <strong>특정 모델(예: <code>jaguar</code>) 검색 결과 URL</strong>을 넣으시면 정확하고 빠르게 감지됩니다.<br>
+      • <strong>알림 폭탄 방지:</strong> 최초 등록 시점의 기존 판매 중인 상품들은 기준선(Baseline)으로만 등록되며 알림이 가지 않습니다. <strong>이후 새롭게 올라온 신상품이나 품절 후 재입고된 상품만</strong> 실시간 알림이 발송됩니다.
     </div>
 
     <!-- 1. 유저 정보 및 디스코드/텔레그램 웹훅 등록 -->
@@ -138,11 +139,14 @@
     <!-- 2. 상품 키워드 등록 (한글/영문 파싱 및 경우의 수 자동 생성) -->
     <div class="card">
       <h2>2. 상품 키워드 등록 (한/영 및 파생 키워드 자동 확장)</h2>
+      <div class="helper-desc">
+        💡 <strong>다중 키워드 등록 팁:</strong> 세미콜론(<code>;</code>) 또는 엔터로 구분하면 동일한 사이트 링크 묶음에 대해 여러 상품을 한 번에 감시할 수 있습니다. (예: <code>fender jaguar ; fender jazzmaster</code>)
+      </div>
       <label>영문 키워드 입력</label>
-      <input type="text" id="keywordsEn" placeholder="예: fender vinteraiii jaguar" oninput="updateKeywordPreview()" />
+      <input type="text" id="keywordsEn" placeholder="예: fender jaguar ; fender jazzmaster" oninput="updateKeywordPreview()" />
 
       <label>한글 키워드 입력</label>
-      <input type="text" id="keywordsKo" placeholder="예: 펜더 빈테라3 재규어" oninput="updateKeywordPreview()" />
+      <input type="text" id="keywordsKo" placeholder="예: 펜더 재규어 ; 펜더 재즈마스터" oninput="updateKeywordPreview()" />
 
       <div style="font-size:0.83rem; color:var(--muted);">자동 생성된 검색 파생 키워드 (모두 등록 및 조합 검증):</div>
       <div id="keywordPreview" class="tag-list"></div>
@@ -425,8 +429,10 @@
             return;
           }
           finalEl.className = 'status-msg status-ok';
-          finalEl.textContent = '🎉 등록 완료! 확장 키워드(' + (res.expandedKeywords || []).join(', ') + ')로 ' +
-            verifiedSites.length + '개 사이트 감시를 시작했습니다. (초기 매칭 상품: ' + (res.scanSummary ? res.scanSummary.length : 0) + '건)';
+          const baselineText = (res.baselineCount !== undefined ? res.baselineCount : (res.scanSummary ? res.scanSummary.length : 0));
+          finalEl.innerHTML = '🎉 <strong>모니터링 등록 완료!</strong> 확장 키워드(' + (res.expandedKeywords || []).join(', ') + ')로 ' +
+            verifiedSites.length + '개 사이트 감시를 시작했습니다.<br>' +
+            '🛡️ <em>최초 등록 알림 방지:</em> 기존 판매 중인 상품 ' + baselineText + '건을 기준선(Baseline)으로 등록했습니다. (기존 상품 알림은 가지 않으며, 이후 새로 올라온 신상품이나 재입고 상품부터 실시간 알림이 발송됩니다.)';
         },
         err => {
           finalEl.className = 'status-msg status-error';
@@ -437,3 +443,4 @@
   </script>
 </body>
 </html>
+

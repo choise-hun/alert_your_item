@@ -8,16 +8,20 @@ GitHub Pages(`github.io`) 프론트엔드와 서버비 0원의 Google Apps Scrip
 
 ## 🌟 주요 기능
 
-1. **한/영 키워드 자동 확장 및 조합 검증**
+1. **한/영 키워드 자동 확장 & 다중 타겟 키워드 동시 감시**
    - 로마자(i~x) ↔ 아라비아 숫자(1~10) 자동 변환 (`vintera iii` ↔ `빈테라 3`, `vintera3`, `vinteraiii`)
    - 띄어쓰기, 하이픈, 붙여쓰기 및 브랜드 사전(`fender` ↔ `펜더`, `stratocaster` ↔ `스트랫`) 지원
+   - **다중 키워드 지원**: 세미콜론(<code>;</code>) 또는 엔터로 구분하여 한 번에 여러 상품(예: `fender jaguar ; fender jazzmaster`)을 단일 사이트 묶음에서 동시 감시 가능
 2. **2단계 품절(Sold Out) 정밀 판별**
    - **1단계**: 목록 화면의 품절 텍스트, 품절 이미지 배지(`icon_soldout.gif`), CSS 클래스 스캔
    - **2단계**: 키워드에 매칭된 상품에 한해 상품 상세 페이지 2차 검증(목록엔 숨겨진 품절 버튼 감지)
-3. **상태 전이(State Transition) 기반 알림**
-   - **신규 입고(NEW)**: 최초 발견 시 구매 가능한 상태일 때 발송
+3. **최초 등록 시 알림 폭탄 방지 (Baseline 스냅샷)**
+   - 최초 등록 시점에 이미 쇼핑몰에 존재하는 상품들은 '기초 기준선(Baseline)'으로만 기록하고 **알림은 일절 발송하지 않습니다.**
+   - 등록 이후 새롭게 등장한 진짜 **신상품(NEW)** 또는 품절에서 풀린 **재입고(RESTOCK)**만 실시간 알림을 보냅니다.
+4. **상태 전이(State Transition) 기반 정밀 알림**
+   - **신규 입고(NEW)**: 이전 스냅샷에 없던 새 URL 발견 + 구매 가능 시 발송
    - **재입고(RESTOCK)**: 품절(`isSoldOut: true`) 상태에서 구매 가능(`isSoldOut: false`)으로 전환될 때 발송
-4. **디스코드 & 텔레그램 동시 알림**
+5. **디스코드 & 텔레그램 동시 알림**
    - Discord Webhook 및 Telegram Bot 지원
 
 ---
@@ -133,3 +137,4 @@ node node_product_monitor.js
 
 ## 📄 라이선스
 MIT License
+
