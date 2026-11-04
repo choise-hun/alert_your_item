@@ -315,7 +315,8 @@ async function fetchHtml(url) {
 }
 
 function extractProducts(html, baseUrl) {
-  const $ = cheerio.load(html);
+  const sanitizedHtml = String(html || '').replace(/<!--[\s\S]*?-->/g, '');
+  const $ = cheerio.load(sanitizedHtml);
   $('script, style, noscript').remove();
 
   const products = [];
@@ -363,7 +364,10 @@ async function checkDetailPageSoldOut(productUrl) {
   try {
     const { statusCode, html } = await fetchHtml(productUrl);
     if (statusCode < 200 || statusCode >= 400) return false;
-    const $ = cheerio.load(html);
+    
+    // HTML 주석(<!--...-->) 먼저 제거 (쇼핑몰에서 재고 있을 때 품절 버튼을 주석 처리하는 패턴 방지)
+    const sanitizedHtml = html.replace(/<!--[\s\S]*?-->/g, '');
+    const $ = cheerio.load(sanitizedHtml);
     $('script, style, noscript').remove();
     const bodyHtml = $.html();
 

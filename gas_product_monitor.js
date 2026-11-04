@@ -454,7 +454,10 @@ function checkDetailPageSoldOut_(productUrl) {
     const res = fetchHtmlWithEncoding_(productUrl);
     if (res.statusCode < 200 || res.statusCode >= 400) return false;
 
+    // 쇼핑몰 템플릿에서 재고가 있을 때 품절 버튼을 HTML 주석(<!-- <p class="view_soldout">품절</p> -->)으로
+    // 감싸서 숨겨두는 경우가 많으므로 반드시 주석(<!--...-->)을 먼저 제거해야 합니다.
     const cleanDetail = res.html
+      .replace(/<!--[\s\S]*?-->/g, '')
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '');
 
@@ -476,6 +479,7 @@ function extractProductsFromHtml_(html, baseUrl) {
   const seenUrls = new Set();
 
   const cleanHtml = html
+    .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '');
 
